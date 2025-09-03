@@ -1,0 +1,29 @@
+﻿@page "/Account/Logout"
+
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject SignInManager<ApplicationUser> _signInManager
+@inject IHttpContextAccessor _httpContextAccessor
+@inject NavigationManager Navigation
+@using Microsoft.AspNetCore.Components.Authorization
+
+@rendermode InteractiveServer
+
+<h3>Please click on logout button to logout from application</h3>
+
+<button @onclick="LogoutUser" style="background-color:black;color:white">Logout</button>
+
+@code {
+    public async Task LogoutUser()
+    {
+        await _httpContextAccessor.HttpContext!.SignOutAsync(IdentityConstants.ExternalScheme);
+        Navigation.NavigateTo("/", forceLoad: true);
+    }
+    protected override async Task OnInitializedAsync()
+    {
+        if (HttpMethods.IsGet(_httpContextAccessor.HttpContext!.Request.Method))
+        {
+            await _httpContextAccessor.HttpContext!.SignOutAsync(IdentityConstants.ApplicationScheme);
+            Navigation.NavigateTo("/Account/Login", forceLoad: true);
+        }
+    }
+}

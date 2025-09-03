@@ -1,0 +1,170 @@
+﻿@page "/Plugin"
+
+@attribute [Authorize(Roles = "Manager,Underwriter")]
+
+@using Microsoft.AspNetCore.Identity
+@using System.Net.Http.Headers
+@using System.Text
+@using Newtonsoft.Json
+@using Underwriting.Components.Account.Models
+@using Underwriting.Data
+@using Microsoft.Extensions.Configuration
+@using Microsoft.JSInterop
+@using Microsoft.AspNetCore.WebUtilities
+
+@inject IConfiguration Configuration
+@inject SignInManager<ApplicationUser> SignInManager
+@inject NavigationManager NavigationManager
+@inject IdentityRedirectManager RedirectManager
+@inject IHttpContextAccessor HttpContextAccessor
+@inject ApplicationDbContext _ApplicationDbContext
+@inject AuthenticationStateProvider _authStateProvider
+@rendermode InteractiveServer
+
+
+<HeadContent>
+    <script type="application/javascript" src="@PluginUrl"></script>
+</HeadContent>
+
+<script type="application/javascript">
+    i3Plugins.onPluginCreated = function(type, plugin) {
+        plugin.onEmbed = function(msg) {
+            if (!document.querySelectorAll('.i3plugins-inline-form-container').length) {
+                checkClassExists('i3plugins-inline-form-container', 3000);
+                return "your-element-id";
+            } else {
+                 return "second-div-hide";
+            }
+        }
+    }
+
+    function checkClassExists(className, interval = 1000) {
+        const checkInterval = setInterval(() => {
+            const containers = document.querySelectorAll(`.${className}`);
+
+            if (containers.length > 0) {
+                if (containers.length > 1) {
+                    for (let i = 1; i < containers.length; i++) {
+                        containers[i].parentNode.removeChild(containers[i]);
+                    }
+                }
+                clearInterval(checkInterval);
+                document.getElementById("please-wait").style.display = 'none';
+            } else {
+            }
+        }, interval);
+    }
+</script>
+
+
+<div class="wait-container" id="please-wait" style="height: 816px;visibility: visible;">
+    <div class="wait-content"><div class="loader" id="please-wait-spinner"></div></div>
+</div>
+<div id="your-element-id">
+</div>
+<div id="second-div-hide" style="display:none">
+</div>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> authenticationStateTask { get; set; }
+
+    private bool isAdmin;
+    private string loaderClass = "";
+    private static string PluginSession;
+    private string PluginUrl { get; set; }
+
+    [Inject]
+    private IJSRuntime JSRuntime { get; set; }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        string token = string.Empty;
+        string baseURL = Configuration.GetSection("PluginBaseURL").Value;
+
+        var name = _authStateProvider.GetAuthenticationStateAsync().Result.User.Identity.Name;
+
+        var user = _ApplicationDbContext.ApplicationUsers.Where(x => x.UserName.ToLower() == name.ToLower()).ToList().FirstOrDefault();
+
+        PluginRequestModel pluginRequest = new PluginRequestModel()
+        {
+            user_roles = new UserRole()
+            {
+                user_id = user.Id,
+                users = await GetUsers()
+            }
+        };
+
+        using (var httpClient = new HttpClient())
+        {
+            string baseAddress = $"{baseURL}/v2/services/oauth2/token";
+
+            string grant_type = Configuration.GetSection("ClientCredentials").GetValue<string>("GrantType");
+            string client_id = Configuration.GetSection("ClientCredentials").GetValue<string>("UnderwritingKey");
+            string client_secret = Configuration.GetSection("ClientCredentials").GetValue<string>("UnderwritingSecret");
+
+            var clientCreds = System.Text.Encoding.UTF8.GetBytes($"{client_id}:{client_secret}");
+
+            httpClient.DefaultRequestHeaders.Authorization =
+              new AuthenticationHeaderValue("Basic", System.Convert.ToBase64String(clientCreds));
+
+            var form = new Dictionary<string, string>
+        {
+                {"grant_type", grant_type}
+            };
+
+            HttpResponseMessage tokenResponse = await httpClient.PostAsync(baseAddress, new FormUrlEncodedContent(form));
+            var jsonContent = await tokenResponse.Content.ReadAsStringAsync();
+            var tok = JsonConvert.DeserializeObject<Token>(jsonContent);
+
+            token = tok.access_token;
+        }
+
+        HttpClient client = new HttpClient();
+
+        string request = JsonConvert.SerializeObject(pluginRequest, Newtonsoft.Json.Formatting.Indented,
+                        new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore });
+
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        client.BaseAddress = new Uri(baseURL);
+        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));//ACCEPT header
+        HttpRequestMessage httpRequest = new HttpRequestMessage(HttpMethod.Post, "/v2/plugins/underwriting");
+        httpRequest.Content = new StringContent(request, Encoding.UTF8, "application/json");//CONTENT-TYPE header
+
+        var result = client.SendAsync(httpRequest).Result;
+
+        var pluginResult = JsonConvert.DeserializeObject<PluginSession>(result.Content.ReadAsStringAsync().Result);
+
+        PluginSession = pluginResult.Plugin_Session_Id;
+        await JSRuntime.InvokeVoidAsync("i3Plugins.launch", PluginSession);
+    }
+
+    private async Task<List<User>> GetUsers()
+    {
+        List<User> usersList = new List<User>();
+
+        var appUsers = _ApplicationDbContext.Users.ToList();
+
+        foreach (var appuser in appUsers)
+        {
+            var userRole = _ApplicationDbContext.UserRoles.Where(r => r.UserId == appuser.Id).ToList().FirstOrDefault();
+            var role = _ApplicationDbContext.Roles.Where(r => r.Id == userRole.RoleId).ToList().FirstOrDefault();
+            var currentRole = new Role(role.Name);
+            User newUser = new User()
+            {
+                display_name = appuser.DisplayName,
+                id = appuser.Id,
+                email = appuser.Email,
+                role = currentRole.id
+            };
+
+            usersList.Add(newUser);
+        }
+
+        return usersList;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        PluginUrl = Configuration.GetSection("PluginURL").Value + PluginSession;
+    }
+}

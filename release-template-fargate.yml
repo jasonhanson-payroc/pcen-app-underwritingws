@@ -1,0 +1,37 @@
+parameters:
+  - name: STACK
+    type: string
+    default: false
+  - name: ROLE_ARN
+    type: string
+    default: false
+  - name: VERSION
+    type: string
+    default: false
+  - name: CLUSTER_SERVICE
+    type: string
+    default: false
+  - name: SSM_PREFIX
+    type: string
+    default: false
+  - name: CFG_VARIABLE_GROUP
+    type: string
+    default: false
+
+steps:
+  - checkout: self  
+  - checkout: devops-tools
+
+  - script: "$(Agent.BuildDirectory)/s/devops-tools/STS-Assume-Files/sts-assume"
+    displayName: "Log into ${{ parameters.STACK }} AWS account"
+    env:
+      AWS_ACCESS_KEY_ID: $(OPS_ACCESS_KEY_ID)
+      AWS_SECRET_ACCESS_KEY: $(OPS_SECRET_ACCESS_KEY)
+      ROLE_ARN: ${{ parameters.ROLE_ARN }}
+      
+  - script: "node $(Agent.BuildDirectory)/s/newunderwritingwebsite/ecs-deploy-script.js \"${{ parameters.CLUSTER_SERVICE }}\" \"${{ parameters.VERSION }}\" \"i3verticals/Enterprise\" \"${{ parameters.CFG_VARIABLE_GROUP }}\" \"${{ parameters.SSM_PREFIX }}\""
+    displayName: "AWS Fargate Deploy"
+    continueOnError: true
+    env:
+      AZURE_DEVOPS_EXT_PAT: $(AZURE_DEVOPS_EXT_PAT)
+      DB_PASSWORD: $(DB_PASSWORD)

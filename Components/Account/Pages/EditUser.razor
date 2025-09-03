@@ -1,0 +1,170 @@
+﻿@page "/Account/EditUser"
+@attribute [Authorize(Roles = "Manager")]
+
+
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.AspNetCore.WebUtilities
+@using Newtonsoft.Json
+@using Underwriting.Data
+@using Microsoft.Extensions.Configuration
+@using Underwriting.Components.Account.Shared
+@using Underwriting.Components.Account.Pages
+
+@inject IConfiguration Configuration
+@inject SignInManager<ApplicationUser> SignInManager
+@inject NavigationManager NavigationManager
+@inject IdentityRedirectManager RedirectManager
+@inject IHttpContextAccessor HttpContextAccessor
+@inject ApplicationDbContext _ApplicationDbContext
+
+<div class="row">
+    <div class="col-md-4">
+        <section>
+            <StatusMessage Message="@errorMessage" AlertType="@alertType" />
+            <EditForm Model="Input" method="post" OnValidSubmit="HandleUpdateUser" FormName="CreateUser">
+                <DataAnnotationsValidator />
+                <h2>Edit  User</h2>
+                <hr />
+                <div class="form-floating mb-3">
+                    <InputText @bind-Value="Input.Email" class="form-control" disabled autocomplete="username" aria-required="true" placeholder="name@example.com" />
+                    <label for="email" class="form-label">Email</label>
+                    <ValidationMessage For="() => Input.Email" class="text-danger" />
+                </div>
+                <div class="form-floating mb-3" style="display:none">
+                    <InputText @bind-Value="Input.Email" class="form-control"  autocomplete="username" aria-required="true" placeholder="name@example.com" />
+                    <label for="email" class="form-label">Email</label>
+                    <ValidationMessage For="() => Input.Email" class="text-danger" />
+                </div>
+                <div class="form-floating mb-3">
+                    <InputText @bind-Value="Input.DisplayName" class="form-control" autocomplete="displayname" aria-required="true" placeholder="" />
+                    <label for="displayname" class="form-label">Username</label>
+                    <ValidationMessage For="() => Input.DisplayName" class="text-danger" />
+                </div>
+                <div class="form-floating mb-3">
+                    <InputSelect id="selectedOption" @bind-Value="Input.SelectedOption" class="form-control">
+                        <option value="">-- Select an option --</option>
+                        @foreach (var option in AppRoles)
+                        {
+                            <option value="@option.Id">@option.RoleName</option>
+                        }
+                    </InputSelect>
+                    <label for="email" class="form-label">Role</label>
+                    <ValidationMessage For="() => Input.SelectedOption" class="text-danger" />
+                </div>
+                <div>
+                    <button type="submit" class="w-100 btn btn-lg btn-primary">Update User</button>
+                </div>
+            </EditForm>
+        </section>
+    </div>
+</div>
+
+@code {
+    private string? errorMessage;
+    private string alertType = string.Empty;
+
+    [CascadingParameter]
+    private HttpContext HttpContext { get; set; } = default!;
+
+    [SupplyParameterFromForm]
+    private InputModel Input { get; set; } = new();
+
+    [SupplyParameterFromQuery]
+    private string? ReturnUrl { get; set; }
+
+    public List<AppRole> AppRoles { get; set; }
+
+    public string QueryEmailId {get;set;}
+    protected bool IsDisabled { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        AppRoles = _ApplicationDbContext.Roles.Select(x => new AppRole() { Id = x.Id, RoleName = x.Name }).ToList();
+        var UserRole = _ApplicationDbContext.UserRoles.ToList();
+        var uri = NavigationManager.ToAbsoluteUri(NavigationManager.Uri);
+        Microsoft.Extensions.Primitives.StringValues initValue;
+        QueryHelpers.ParseQuery(uri.Query).TryGetValue("Emailid", out initValue);
+        string QueryEmailId = initValue.ToString();
+        IsDisabled = true;
+        if (QueryEmailId != Input.Email)
+        {
+            var EmpDet = _ApplicationDbContext.ApplicationUsers.Where(i => i.Email == QueryEmailId).FirstOrDefault();
+            string id = EmpDet.Id;
+            if(_ApplicationDbContext.UserRoles.Any(u => u.UserId == id))
+            {
+                Input.SelectedOption = _ApplicationDbContext.UserRoles.Where(u => u.UserId == id).FirstOrDefault().RoleId;
+            }
+            Input.Email = QueryEmailId;
+            Input.DisplayName = EmpDet.DisplayName;
+        }
+    }
+
+    private sealed class InputModel
+    {
+        [Required(ErrorMessage = "Email is required.")]
+        [EmailAddress(ErrorMessage = "username must follow valid email address format")]
+        [RegularExpression(@"^[^@\s]+@[^@\s]+\.[^@\s]+$", ErrorMessage = "Invalid email format.")]
+        public string Email { get; set; }
+
+        [Required(ErrorMessage = "Selection is required.")]
+        public string SelectedOption { get; set; }
+
+        [Required(ErrorMessage = "Username is required.")]
+        public string DisplayName { get; set; }
+
+    }
+
+    private async Task HandleUpdateUser()
+    {
+        bool flag = false;
+        if (_ApplicationDbContext!.ApplicationUsers!.Any(mailID => mailID.Email.ToLower() == Input.Email.ToLower()))
+        {
+            string id = _ApplicationDbContext.ApplicationUsers.Where(i => i.Email == Input.Email).FirstOrDefault().Id;
+            #region Update User Details
+            var UserProfile = _ApplicationDbContext.ApplicationUsers.Where(i => i.Email == Input.Email).FirstOrDefault();            
+            UserProfile.DisplayName = Input.DisplayName;           
+            _ApplicationDbContext.ApplicationUsers.Update(UserProfile);
+            await _ApplicationDbContext.SaveChangesAsync();
+            #endregion
+
+            if (_ApplicationDbContext.UserRoles.Any(u => u.UserId == id))
+            {
+                var userRoleByID = _ApplicationDbContext.UserRoles.Where(rol => rol.UserId == id).FirstOrDefault();
+                _ApplicationDbContext.UserRoles.Remove(userRoleByID);
+                await _ApplicationDbContext.SaveChangesAsync();
+                IdentityUserRole<string> userRole = new IdentityUserRole<string>()
+                {
+                    UserId = id,
+                    RoleId = Input.SelectedOption
+                };
+
+                _ApplicationDbContext.UserRoles.Add(userRole);
+            }
+            else
+            {
+                IdentityUserRole<string> userRole = new IdentityUserRole<string>()
+                {
+                    UserId = _ApplicationDbContext!.ApplicationUsers!.Where(usr => usr.Email == Input.Email).FirstOrDefault().Id,
+                    RoleId = Input.SelectedOption
+                };
+                _ApplicationDbContext.UserRoles.Add(userRole);
+                await _ApplicationDbContext.SaveChangesAsync();
+            }
+            await _ApplicationDbContext.SaveChangesAsync();
+            errorMessage = "User Updated Successfully";
+            alertType = "Success";
+            flag = true;
+        }
+        else
+        {
+            errorMessage = "User email provided not registered";
+            alertType = "Error";
+        }
+        if (flag)
+        {
+            NavigationManager.NavigateTo("/Account/ManageUsers", forceLoad: true);
+        }
+
+    }
+}

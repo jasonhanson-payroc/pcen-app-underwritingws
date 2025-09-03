@@ -1,0 +1,124 @@
+# Docker
+# Build a Docker image
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger:
+  branches:
+    include:
+      - '*'
+
+resources:
+  repositories:
+    - repository: devops-tools
+      type: bitbucket
+      name: i3verticals/devops-tools
+      ref: CORP-1317
+      # TODO: change service connection here
+      endpoint: "Bitbucket - AlexGillespie_i3"
+
+variables:
+  tag: '$(Build.BuildId)'
+  ecrRegistry: '916997012347.dkr.ecr.us-east-1.amazonaws.com'
+
+stages:
+- stage: Docker
+  displayName: Build & Push Docker image to AWS ECR
+  variables:
+   - group: "AWS_CREDS"
+  jobs:
+  - job: Build_and_Push
+    displayName: Build & Push Docker image
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - script: aws ecr get-login-password --region $(AWS_DEFAULT_REGION) | docker login --username AWS --password-stdin $(ecrRegistry)
+      displayName: "Log into Amazon ECR"
+      env:
+        AWS_ACCESS_KEY_ID: $(OPS_ACCESS_KEY_ID)
+        AWS_SECRET_ACCESS_KEY: $(OPS_SECRET_ACCESS_KEY)
+  
+    - bash: |
+        short_hash=`git rev-parse --short=9 HEAD`
+        short_hash="${short_hash}_$(Build.BuildId)"
+        echo "Short git hash: $short_hash"       
+        ## Store variable for subsequent steps
+        echo "##vso[task.setvariable variable=short_hash]$short_hash"
+        echo "##vso[task.setvariable variable=output_short_hash;isOutput=true]$short_hash"
+      workingDirectory: $(Build.SourcesDirectory)
+      name: getShortHash
+      displayName: Get short git hash          
+          
+    - task: Docker@2
+      displayName: 'Build UnderWriting'
+      inputs:
+        command: build
+        Dockerfile: '$(Build.SourcesDirectory)/Dockerfile'
+        buildContext: '$(Build.SourcesDirectory)'
+        repository: "$(ecrRegistry)/enterprise-underwriting-plugin-host"
+        tags: |
+          $(short_hash)
+        arguments: ''
+    # - task: PowerShell@2
+    #   displayName: 'installing dotnet ef tool'
+    #   inputs:
+    #      targetType: 'inline'
+    #      script: 'dotnet tool install --global dotnet-ef --version 8.0.6'
+    # - task: PowerShell@2
+    #   displayName: 'creating migrations bundle'
+    #   inputs:
+    #      targetType: 'inline'
+    #      script: 'dotnet ef migrations bundle --self-contained -r linux-x64 --output $(Build.ArtifactStagingDirectory)/efbundle'
+    # - task: PublishBuildArtifacts@1
+    #   inputs:
+    #     PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    #     ArtifactName: 'efbundle'
+    #     publishLocation: 'Container'
+    - task: Docker@2
+      displayName: 'Push UnderWriting'
+      inputs:
+        command: push
+        repository: "$(ecrRegistry)/enterprise-underwriting-plugin-host"
+        tags: |
+          $(short_hash)
+    # - task: DownloadPipelineArtifact@2
+    #   inputs:
+    #     artifactName: 'efbundle'
+    # - task: Bash@3
+    #   inputs:
+    #     targetType: 'inline'
+    #     script: 'chmod +x ./efbundle'
+    #     workingDirectory: '$(Pipeline.Workspace)'    
+    # - task: Bash@3
+    #   inputs:
+    #    targetType: 'inline'
+    #    script: './efbundle --connection ''Server=enterprise-dev.cykwtf0wyekw.us-east-1.rds.amazonaws.com;Database=Artefacts_Underwriting;user id=ent_underwriting;password=PC2tX7sEHGwwKU3Q!;Encrypt=False'''
+    #    workingDirectory: '$(Pipeline.Workspace)'
+
+
+- stage: Dev
+  # condition: and(succeeded(), or(eq(variables['ReleaseCapableBranch'], True), eq(variables['ReleaseCapableBranchForDev'], True)))
+  condition: 'true' #todo: fix condition
+  dependsOn: Docker
+  variables:
+    - group: "AWS_CREDS"
+    - group: Underwriting_aws_dev
+  jobs:
+    - deployment: Dev
+      timeoutInMinutes: 0
+      environment: AWS_dev
+      pool:
+        vmImage: ubuntu-latest
+      variables:
+        version: $[ stageDependencies.Docker.Build_and_Push.outputs['getShortHash.output_short_hash'] ]
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              - template: "release-template-fargate.yml"
+                parameters:
+                  CLUSTER_SERVICE: "commtech-uw-dev-plugin-host/commtech-uw-dev-plugin-host"
+                  SSM_PREFIX: "/dev/underwriting"
+                  STACK: "dev"
+                  ROLE_ARN: $(AWS_ROLE_ARN)
+                  VERSION: $(version)
+                  CFG_VARIABLE_GROUP: "407"

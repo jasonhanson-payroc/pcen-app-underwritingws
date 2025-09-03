@@ -1,0 +1,143 @@
+﻿@page "/Account/AddUser"
+@attribute [Authorize(Roles = "Manager")]
+
+
+@using System.ComponentModel.DataAnnotations
+@using Microsoft.AspNetCore.Identity
+@using Microsoft.AspNetCore.WebUtilities
+@using Newtonsoft.Json
+@using Underwriting.Data
+@using Microsoft.Extensions.Configuration
+@using Underwriting.Components.Account.Shared
+@using Underwriting.Components.Account.Pages
+@using Underwriting.EmailSender
+
+@inject IConfiguration Configuration
+@inject SignInManager<ApplicationUser> SignInManager
+@inject NavigationManager NavigationManager
+@inject IdentityRedirectManager RedirectManager
+@inject IHttpContextAccessor HttpContextAccessor
+@inject ApplicationDbContext _ApplicationDbContext
+@inject EmailSender EmailSender
+@inject UserManager<ApplicationUser> UserManager
+
+<div class="row">
+    <div class="col-md-4">
+        <section>
+            <StatusMessage Message="@errorMessage" AlertType="@alertType" />
+            <EditForm Model="Input" method="post" OnValidSubmit="HandleCreateNewUser" FormName="CreateUser">
+                <DataAnnotationsValidator />
+                <h2>Create New User</h2>
+                <hr />
+                <div class="form-floating mb-3">
+                    <InputText @bind-Value="Input.Email" class="form-control" autocomplete="username" aria-required="true" placeholder="name@example.com" />
+                    <label for="email" class="form-label">Email</label>
+                    <ValidationMessage For="() => Input.Email" class="text-danger" />
+                </div>
+                <div class="form-floating mb-3">
+                    <InputText @bind-Value="Input.DisplayName" class="form-control" autocomplete="displayname" aria-required="true" placeholder="" />
+                    <label for="displayname" class="form-label">Username</label>
+                    <ValidationMessage For="() => Input.DisplayName" class="text-danger" />
+                </div>
+                <div class="form-floating mb-3">
+                    <InputSelect id="selectedOption" @bind-Value="Input.SelectedOption" class="form-control">
+                        <option value="">-- Select an role --</option>
+                        @foreach (var option in AppRoles)
+                        {
+                            <option value="@option.Id">@option.RoleName</option>
+                        }
+                    </InputSelect>
+                    <label for="email" class="form-label">Role</label>
+                    <ValidationMessage For="() => Input.SelectedOption" class="text-danger" />
+                </div>
+                <div>
+                    <button type="submit" class="w-100 btn btn-lg btn-primary">Create User</button>
+                </div>
+            </EditForm>
+        </section>
+    </div>
+</div>
+
+@code {
+    private string? errorMessage;
+    private string alertType = string.Empty;
+
+    [CascadingParameter]
+    private HttpContext HttpContext { get; set; } = default!;
+
+    [SupplyParameterFromForm]
+    private InputModel Input { get; set; } = new();
+
+    [SupplyParameterFromQuery]
+    private string? ReturnUrl { get; set; }
+
+    public List<AppRole> AppRoles { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        AppRoles = _ApplicationDbContext.Roles.Select(x => new AppRole() { Id = x.Id, RoleName = x.Name }).ToList();
+        var UserRole = _ApplicationDbContext.UserRoles.ToList();
+    }
+
+    private sealed class InputModel
+    {
+        [Required(ErrorMessage = "Email is required.")]
+        [EmailAddress(ErrorMessage = "username must follow valid email address format")]
+        [RegularExpression(@"^[^@\s]+@[^@\s]+\.[^@\s]+$", ErrorMessage = "Invalid email format.")]
+        public string Email { get; set; } = "";
+
+        [Required(ErrorMessage = "Role is required.")]
+        public string SelectedOption { get; set; }
+
+        [Required(ErrorMessage = "Username is required.")]
+        public string DisplayName { get; set; } = "";
+
+    }
+
+    private async Task HandleCreateNewUser()
+    {
+        if (_ApplicationDbContext!.ApplicationUsers!.Any(mailID => mailID.Email.ToLower() == Input.Email.ToLower()))
+        {
+            errorMessage = "User email provided already registered";
+            alertType = "Error";
+        }
+        else if (string.IsNullOrEmpty(Input.Email))
+        {
+            errorMessage = "All fields must be filled out in order to create a user";
+            alertType = "Error";
+        }
+        else
+        {
+            ApplicationUser applicationUser = new ApplicationUser()
+            {
+                Email = Input.Email,
+                UserName = Input.Email,
+                NormalizedEmail = Input.Email.ToUpper(),
+                NormalizedUserName = Input.Email,
+                DisplayName = Input.DisplayName,
+                EmailConfirmed = true
+            };
+            _ApplicationDbContext.ApplicationUsers.Add(applicationUser);
+            await _ApplicationDbContext.SaveChangesAsync();
+
+            IdentityUserRole<string> userRole = new IdentityUserRole<string>()
+            {
+                UserId = _ApplicationDbContext!.ApplicationUsers!.Where(usr => usr.Email == Input.Email).FirstOrDefault().Id,
+                RoleId = Input.SelectedOption
+            };
+
+            _ApplicationDbContext.UserRoles.Add(userRole);
+            await _ApplicationDbContext.SaveChangesAsync();
+
+            errorMessage = "User Added Successfully";
+            alertType = "Success";
+            var user = await UserManager.FindByEmailAsync(Input.Email);
+            var code = await UserManager.GeneratePasswordResetTokenAsync(user);
+            code = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(code));
+            var callbackUrl = NavigationManager.GetUriWithQueryParameters(
+                NavigationManager.ToAbsoluteUri("Account/ResetPassword").AbsoluteUri,
+                new Dictionary<string, object?> { ["code"] = code });
+            EmailSender.SendUserCreationSuccessMail(user, callbackUrl);
+        }
+    }
+}
