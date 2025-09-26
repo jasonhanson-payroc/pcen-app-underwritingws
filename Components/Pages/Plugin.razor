@@ -78,64 +78,124 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        string token = string.Empty;
-        string baseURL = Configuration.GetSection("PluginBaseURL").Value;
-
-        var name = _authStateProvider.GetAuthenticationStateAsync().Result.User.Identity.Name;
-
-        var user = _ApplicationDbContext.ApplicationUsers.Where(x => x.UserName.ToLower() == name.ToLower()).ToList().FirstOrDefault();
-
-        PluginRequestModel pluginRequest = new PluginRequestModel()
+        try
         {
-            user_roles = new UserRole()
+            string token = string.Empty;
+            string baseURL = Configuration.GetSection("PluginBaseURL")?.Value;
+            
+            if (string.IsNullOrEmpty(baseURL))
             {
-                user_id = user.Id,
-                users = await GetUsers()
+                Console.WriteLine("PluginBaseURL is not configured");
+                return;
             }
-        };
 
-        using (var httpClient = new HttpClient())
-        {
-            string baseAddress = $"{baseURL}/v2/services/oauth2/token";
+            var authState = await _authStateProvider.GetAuthenticationStateAsync();
+            var name = authState?.User?.Identity?.Name;
+            
+            if (string.IsNullOrEmpty(name))
+            {
+                Console.WriteLine("User is not authenticated");
+                return;
+            }
 
-            string grant_type = Configuration.GetSection("ClientCredentials").GetValue<string>("GrantType");
-            string client_id = Configuration.GetSection("ClientCredentials").GetValue<string>("UnderwritingKey");
-            string client_secret = Configuration.GetSection("ClientCredentials").GetValue<string>("UnderwritingSecret");
+            var user = _ApplicationDbContext.ApplicationUsers.Where(x => x.UserName.ToLower() == name.ToLower()).FirstOrDefault();
+            
+            if (user == null)
+            {
+                Console.WriteLine($"User {name} not found in database");
+                return;
+            }
 
-            var clientCreds = System.Text.Encoding.UTF8.GetBytes($"{client_id}:{client_secret}");
-
-            httpClient.DefaultRequestHeaders.Authorization =
-              new AuthenticationHeaderValue("Basic", System.Convert.ToBase64String(clientCreds));
-
-            var form = new Dictionary<string, string>
-        {
-                {"grant_type", grant_type}
+            PluginRequestModel pluginRequest = new PluginRequestModel()
+            {
+                user_roles = new UserRole()
+                {
+                    user_id = user.Id,
+                    users = await GetUsers()
+                }
             };
 
-            HttpResponseMessage tokenResponse = await httpClient.PostAsync(baseAddress, new FormUrlEncodedContent(form));
-            var jsonContent = await tokenResponse.Content.ReadAsStringAsync();
-            var tok = JsonConvert.DeserializeObject<Token>(jsonContent);
+            using (var httpClient = new HttpClient())
+            {
+                string baseAddress = $"{baseURL}/v2/services/oauth2/token";
+                Console.WriteLine($"OAuth Token Request URL: {baseAddress}");
 
-            token = tok.access_token;
+                string grant_type = Configuration.GetSection("ClientCredentials")?.GetValue<string>("GrantType");
+                string client_id = Configuration.GetSection("ClientCredentials")?.GetValue<string>("UnderwritingKey");
+                string client_secret = Configuration.GetSection("ClientCredentials")?.GetValue<string>("UnderwritingSecret");
+
+                Console.WriteLine($"Grant Type: {grant_type}");
+                Console.WriteLine($"Client ID: {client_id}");
+                Console.WriteLine($"Client Secret: {(string.IsNullOrEmpty(client_secret) ? "NULL" : "***HIDDEN***")}");
+
+                if (string.IsNullOrEmpty(grant_type) || string.IsNullOrEmpty(client_id) || string.IsNullOrEmpty(client_secret))
+                {
+                    Console.WriteLine("OAuth credentials are not properly configured");
+                    return;
+                }
+
+                var clientCreds = System.Text.Encoding.UTF8.GetBytes($"{client_id}:{client_secret}");
+
+                httpClient.DefaultRequestHeaders.Authorization =
+                  new AuthenticationHeaderValue("Basic", System.Convert.ToBase64String(clientCreds));
+
+                var form = new Dictionary<string, string>
+                {
+                    {"grant_type", grant_type}
+                };
+
+                HttpResponseMessage tokenResponse = await httpClient.PostAsync(baseAddress, new FormUrlEncodedContent(form));
+                
+                if (!tokenResponse.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"Failed to get OAuth token: {tokenResponse.StatusCode}");
+                    return;
+                }
+                
+                var jsonContent = await tokenResponse.Content.ReadAsStringAsync();
+                var tok = JsonConvert.DeserializeObject<Token>(jsonContent);
+
+                if (tok == null || string.IsNullOrEmpty(tok.access_token))
+                {
+                    Console.WriteLine("Failed to deserialize OAuth token response");
+                    return;
+                }
+
+                token = tok.access_token;
+            }
+
+            HttpClient client = new HttpClient();
+
+            string request = JsonConvert.SerializeObject(pluginRequest, Newtonsoft.Json.Formatting.Indented,
+                            new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore });
+
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            client.BaseAddress = new Uri(baseURL);
+            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));//ACCEPT header
+            HttpRequestMessage httpRequest = new HttpRequestMessage(HttpMethod.Post, "/v2/plugins/underwriting");
+            httpRequest.Content = new StringContent(request, Encoding.UTF8, "application/json");//CONTENT-TYPE header
+
+            var result = await client.SendAsync(httpRequest);
+
+            if (!result.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"Failed to call plugin API: {result.StatusCode}");
+                return;
+            }
+
+            var pluginResultContent = await result.Content.ReadAsStringAsync();
+            var pluginResult = JsonConvert.DeserializeObject<PluginSession>(pluginResultContent);
+
+            if (pluginResult != null && !string.IsNullOrEmpty(pluginResult.Plugin_Session_Id))
+            {
+                PluginSession = pluginResult.Plugin_Session_Id;
+                await JSRuntime.InvokeVoidAsync("i3Plugins.launch", PluginSession);
+            }
         }
-
-        HttpClient client = new HttpClient();
-
-        string request = JsonConvert.SerializeObject(pluginRequest, Newtonsoft.Json.Formatting.Indented,
-                        new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore });
-
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        client.BaseAddress = new Uri(baseURL);
-        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));//ACCEPT header
-        HttpRequestMessage httpRequest = new HttpRequestMessage(HttpMethod.Post, "/v2/plugins/underwriting");
-        httpRequest.Content = new StringContent(request, Encoding.UTF8, "application/json");//CONTENT-TYPE header
-
-        var result = client.SendAsync(httpRequest).Result;
-
-        var pluginResult = JsonConvert.DeserializeObject<PluginSession>(result.Content.ReadAsStringAsync().Result);
-
-        PluginSession = pluginResult.Plugin_Session_Id;
-        await JSRuntime.InvokeVoidAsync("i3Plugins.launch", PluginSession);
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error in OnAfterRenderAsync: {ex.Message}");
+        }
     }
 
     private async Task<List<User>> GetUsers()
