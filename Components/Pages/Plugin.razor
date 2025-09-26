@@ -169,6 +169,10 @@
             string request = JsonConvert.SerializeObject(pluginRequest, Newtonsoft.Json.Formatting.Indented,
                             new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore });
 
+            Console.WriteLine($"Plugin API Request URL: {baseURL}/v2/plugins/underwriting");
+            Console.WriteLine($"Plugin Request Body: {request}");
+            Console.WriteLine($"OAuth Token (first 20 chars): {token.Substring(0, Math.Min(20, token.Length))}...");
+
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
             client.BaseAddress = new Uri(baseURL);
             client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));//ACCEPT header
@@ -177,19 +181,29 @@
 
             var result = await client.SendAsync(httpRequest);
 
+            Console.WriteLine($"Plugin API Response Status: {result.StatusCode}");
+            Console.WriteLine($"Plugin API Response Headers: {result.Headers}");
+            
+            var responseContent = await result.Content.ReadAsStringAsync();
+            Console.WriteLine($"Plugin API Response Body: {responseContent}");
+
             if (!result.IsSuccessStatusCode)
             {
-                Console.WriteLine($"Failed to call plugin API: {result.StatusCode}");
+                Console.WriteLine($"Failed to call plugin API: {result.StatusCode} - {responseContent}");
                 return;
             }
 
-            var pluginResultContent = await result.Content.ReadAsStringAsync();
-            var pluginResult = JsonConvert.DeserializeObject<PluginSession>(pluginResultContent);
+            var pluginResult = JsonConvert.DeserializeObject<PluginSession>(responseContent);
 
             if (pluginResult != null && !string.IsNullOrEmpty(pluginResult.Plugin_Session_Id))
             {
                 PluginSession = pluginResult.Plugin_Session_Id;
+                Console.WriteLine($"Plugin Session ID: {PluginSession}");
                 await JSRuntime.InvokeVoidAsync("i3Plugins.launch", PluginSession);
+            }
+            else
+            {
+                Console.WriteLine("Failed to get Plugin Session ID from response");
             }
         }
         catch (Exception ex)
