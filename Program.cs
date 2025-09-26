@@ -52,7 +52,7 @@ var app = builder.Build();
 using (var serviceScope = app.Services.GetRequiredService<IServiceScopeFactory>().CreateScope())
 {
     var context = serviceScope.ServiceProvider.GetService<ApplicationDbContext> ();
-    context.Database.Migrate();
+    //context.Database.Migrate();
 }
 
 // Configure the HTTP request pipeline.
